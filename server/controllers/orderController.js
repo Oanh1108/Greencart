@@ -42,7 +42,7 @@ export const placeOrderStripe = async (req, res) => {
     try {
         const userId = req.user._id; //lấy từ middleware
         const { items, address } = req.body;
-        const {origin} = req.headers;
+        const { origin } = req.headers;
 
         if (!address || items.length === 0) {
             return res.json({ success: false, message: "Invalid data" });
@@ -70,17 +70,21 @@ export const placeOrderStripe = async (req, res) => {
             amount,
             address,
             paymentType: "Online",
+            isPaid: true, // Tạm thời đánh dấu đã thanh toán cho development
         });
 
+        // Xóa giỏ hàng sau khi tạo đơn hàng thành công
+        await User.findByIdAndUpdate(userId, { cartItems: {} });
+
         //Stripe Gateway Initialize
-        const stripeInstance = new stripe(process.env.STRIPE_SECRECT_KEY);
+        const stripeInstance = new stripe(process.env.STRIPE_SECRET_KEY);
 
         //Create line items for stripe
-        const line_items = productData.map((item)=>{
+        const line_items = productData.map((item) => {
             return {
-                price_data:{
-                    currency: "usd", 
-                    product_data:{
+                price_data: {
+                    currency: "usd",
+                    product_data: {
                         name: item.name,
                     },
                     unit_amount: Math.floor(item.price + item.price * 0.02) * 100
@@ -94,10 +98,10 @@ export const placeOrderStripe = async (req, res) => {
             line_items,
             mode: "payment",
             success_url: `${origin}/loader?next=my-orders`,
-            cancel_url:  `${origin}/cart`,
-            metadata:{
+            cancel_url: `${origin}/cart`,
+            metadata: {
                 orderId: order._id.toString(),
-                userId,
+                userId: userId.toString(),
             }
         })
 
@@ -110,7 +114,7 @@ export const placeOrderStripe = async (req, res) => {
 //Stripe Webhooks to Verify Payments Action: /stripe
 export const stripeWebhooks = async (request, response) => {
     //Stripe Gateway Initialize
-    const stripeInstance = new stripe(process.env.STRIPE_SECRECT_KEY);
+    const stripeInstance = new stripe(process.env.STRIPE_SECRET_KEY);
 
     const sig = request.headers["stripe-signature"];
     let event;
@@ -127,34 +131,52 @@ export const stripeWebhooks = async (request, response) => {
 
     //Handle the event
     switch (event.type) {
-        case "payment_intent.succeeded":{
-            const paymentIntent = event.data.object;
-            const paymentIntentId = paymentIntent.id;
+        case "checkout.session.completed": {
+            const session = event.data.object;
+            const { orderId, userId } = session.metadata;
 
-            //Getting Sesstion Mecadata
-            const session = await stripeInstance.checkout.sessions.list({
-                payment_intent:paymentIntentId,
-            });
-
-            const {orderId, userId} = session.data[0].metadata;
+            console.log('✅ Payment completed for order:', orderId);
 
             //Mark Payment as Paid
-            await Order.findByIdAndUpdate(orderId, {isPaid: true})
+            await Order.findByIdAndUpdate(orderId, { isPaid: true });
             //Clear user cart
-            await User.findByIdAndUpdate(userId, {cartItems: {}})
+            await User.findByIdAndUpdate(userId, { cartItems: {} });
             break;
         };
-        case "payment_intent.failed":{
+        case "payment_intent.succeeded": {
             const paymentIntent = event.data.object;
             const paymentIntentId = paymentIntent.id;
 
-            //Getting Sesstion Mecadata
-            const session = await stripeInstance.checkout.sessions.list({
-                payment_intent:paymentIntentId,
+            //Getting Session Metadata
+            const sessions = await stripeInstance.checkout.sessions.list({
+                payment_intent: paymentIntentId,
             });
 
-            const {orderId} = session.data[0].metadata;
-            await Order.findByIdAndDelete(orderId);
+            if (sessions.data.length > 0) {
+                const { orderId, userId } = sessions.data[0].metadata;
+                console.log('✅ Payment intent succeeded for order:', orderId);
+
+                //Mark Payment as Paid
+                await Order.findByIdAndUpdate(orderId, { isPaid: true });
+                //Clear user cart
+                await User.findByIdAndUpdate(userId, { cartItems: {} });
+            }
+            break;
+        };
+        case "payment_intent.failed": {
+            const paymentIntent = event.data.object;
+            const paymentIntentId = paymentIntent.id;
+
+            //Getting Session Metadata
+            const sessions = await stripeInstance.checkout.sessions.list({
+                payment_intent: paymentIntentId,
+            });
+
+            if (sessions.data.length > 0) {
+                const { orderId } = sessions.data[0].metadata;
+                console.log('❌ Payment failed for order:', orderId);
+                await Order.findByIdAndDelete(orderId);
+            }
             break;
         }
 
@@ -162,7 +184,7 @@ export const stripeWebhooks = async (request, response) => {
             console.error(`Unhandled event type ${event.type}`)
             break;
     }
-    response.json({received: true})
+    response.json({ received: true })
 }
 
 //Get Orders by User ID: /api/order/user
@@ -170,28 +192,41 @@ export const stripeWebhooks = async (request, response) => {
 export const getUserOrders = async (req, res) => {
     try {
         const userId = req.user._id;
+
+        // Debug: Lấy tất cả đơn hàng của user để kiểm tra
+        const allOrders = await Order.find({ userId }).populate("items.product").sort({ createdAt: -1 });
+        console.log('All orders for user:', allOrders.map(order => ({
+            id: order._id,
+            paymentType: order.paymentType,
+            isPaid: order.isPaid,
+            amount: order.amount
+        })));
+
+        // Lấy đơn hàng theo điều kiện: COD hoặc đã thanh toán online
         const orders = await Order.find({
             userId,
-            $or: [{paymentType: "COD"}, {isPaid: true}]
-        }).populate("items.product").sort({createdAt: -1}); 
-        //populate("items.product address"): Tự động lấy chi tiết thông tin từ bảng Product (sản phẩm) và Address (địa chỉ), thay vì chỉ lấy ID
-        //sort({createdAt: -1}): sắp xếp đơn hàng theo thời gian tạo ( mới nhất trước)
-        return res.json({success: true, orders});
+            $or: [
+                { paymentType: "COD" },
+                { paymentType: "Online", isPaid: true }
+            ]
+        }).populate("items.product").sort({ createdAt: -1 });
+
+        return res.json({ success: true, orders });
     } catch (error) {
-        return res.json({success: false, message: error.message});
+        return res.json({ success: false, message: error.message });
     }
 }
 
 //Get All Orders (for seller / admin) : /api/order/seller
 //API dành cho quản trị viên để xem tất cả đươn hàng ( chỉ đơn đã thanh toán hoặc COD)
 export const getAllOrders = async (req, res) => {
-     try {
+    try {
         const orders = await Order.find({
-            $or: [{paymentType: "COD"}, {isPaid: true}]
-        }).populate("items.product address").sort({createdAt: -1});
-        return res.json({success: true, orders});
+            $or: [{ paymentType: "COD" }, { isPaid: true }]
+        }).populate("items.product address").sort({ createdAt: -1 });
+        return res.json({ success: true, orders });
     } catch (error) {
-        return res.json({success: false, message: error.message});
+        return res.json({ success: false, message: error.message });
     }
 }
 
