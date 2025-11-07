@@ -8,14 +8,16 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  build: {
+    outDir: 'build'
+  },
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:4000',
+        target: 'https://greencart-backend1-one.vercel.app:4000',
         changeOrigin: true,
         secure: false
       }
     }
-  },
-  base: process.env.VITE_BASE_PATH || "/"
+  }
 })
