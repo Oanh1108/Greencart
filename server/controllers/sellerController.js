@@ -12,7 +12,7 @@ export const sellerLogin = async (req, res) => {
         res.cookie('sellerToken', token, {
             httpOnly: true, // Prevents JavaScript access to the cookie
             secure: process.env.NODE_ENV === 'production', // Use secure cookies in production
-            sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'strict', // CSRF protection
+            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict', // CSRF protection
             maxAge: 7 * 24 * 60 * 60 * 1000, // Cookie expiration time
         });
 
