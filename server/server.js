@@ -22,7 +22,7 @@ await connectDB()
 await connectCloudinary()
 
 //Allow multiple origins
-const allowedOrigins = ['http://localhost:5173', 'https://greencart-rho-two.vercel.app/']; //cho phép frontend gọi API
+const allowedOrigins = ['http://localhost:5173', 'https://greencart-rho-two.vercel.app']; //cho phép frontend gọi API
 
 app.post('/stripe', express.raw({type:'application/json'}), stripeWebhooks)
 
@@ -31,8 +31,19 @@ app.use(express.json()); //Tự động phân tích (Parse body JSON) dữ liệ
 app.use(cookieParser()); //Đoc cookie từ client
 //Cấu hình CORS đúng cách
 app.use(cors({
-    origin: allowedOrigins, 
-    credentials:true}));//cho phép frontend gọi API và gửi cookie từ client
+    origin: function(origin, callback) {
+        // Cho phép requests không có origin (Postman, curl, etc.)
+        if (!origin) return callback(null, true);
+        
+        // Cho phép localhost và tất cả subdomain vercel.app
+        if (allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials:true
+}));//cho phép frontend gọi API và gửi cookie từ client
 
 //Test API
 app.get('/', (req, res) => res.send("API is Working"));
